@@ -1,0 +1,21 @@
+[
+    {
+        "ParameterKey": "EnvironmentName",
+        "ParameterValue": "UdacityProject"
+    },
+
+    {
+        "ParameterKey": "MAXEC2No",
+        "ParameterValue": "5"       
+    },
+
+    {
+        "ParameterKey": "MINEC2No",
+        "ParameterValue": "1"       
+    },
+
+    {
+        "ParameterKey": "DesiredEC2No",
+        "ParameterValue": "2"       
+    }
+]

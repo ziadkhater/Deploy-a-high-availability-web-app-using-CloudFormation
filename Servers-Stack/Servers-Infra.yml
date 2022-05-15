@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description:
+  Web-Servers Stack
+
+Parameters:
+    EnvironmentName:
+        Description: An environment name that will be prefixed to resource names
+        Type: String
+    LatestAmiId:
+      Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+      Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+      #Default: '/aws/service/canonical/ubuntu/server/bionic/stable/current/amd6/hvm/ebs-gp2/ami-id'
+      #Default: '/ubuntu/images/hvm-ssd/ubuntu-xenial-16.04-amd64-server-20161001-eth0-ena'
+
+    DesiredEC2No:
+      Description: Number of desired EC2 instances for Auto Scaling Group
+      Type: String
+  
+    MAXEC2No:
+      Description: MAX Number of EC2 instances for Auto Scaling Group
+      Type: String
+
+    MINEC2No:
+      Description: MIN Number of  EC2 instances for Auto Scaling Group
+      Type: String 
+
+Resources:
+  LBSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to our load balancer
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+        
+  WebServerSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to our hosts and SSH from local only
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+
+  JumpboxSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      GroupDescription: Jumpbox Security Group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0        
+####################################################################
+  WebAppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData: !Base64 |
+        #!/bin/bash
+        yum update -y
+        yum install -y httpd.x86_64
+        systemctl start httpd.service
+        systemctl enable httpd.service
+        cd /var/www/html
+        echo 'it works! Udagram, Udacity' > index.html  
+      ImageId: !Ref LatestAmiId
+      #KeyName: General
+      SecurityGroups:
+      - !Ref WebServerSecGroup
+      InstanceType: t3.small
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdk"
+        Ebs:
+          VolumeSize: 10
+  WebAppGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+      - Fn::ImportValue: 
+          !Sub "${EnvironmentName}-PRIV-NETS"
+      LaunchConfigurationName:
+        Ref: WebAppLaunchConfig
+      MinSize: !Ref MINEC2No
+      MaxSize: !Ref MAXEC2No
+      DesiredCapacity: !Ref DesiredEC2No
+      TargetGroupARNs:
+      - Ref: WebAppTargetGroup
+
+  WebAppLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-SN"
+      SecurityGroups:
+      - Ref: LBSecGroup
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: WebAppTargetGroup
+      LoadBalancerArn:
+        Ref: WebAppLB
+      Port: '80'
+      Protocol: HTTP
+  ALBListenerRule:
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Properties:
+        Actions:
+        - Type: forward
+          TargetGroupArn: !Ref 'WebAppTargetGroup'
+        Conditions:
+        - Field: path-pattern
+          Values: [/]
+        ListenerArn: !Ref 'Listener'
+        Priority: 1
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: 
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VPCID"
+
+
+
+
+  # Publicinstance1:
+  #   Type: AWS::EC2::Instance
+  #   Properties:
+  #     InstanceType: t2.micro
+  #     SubnetId: 
+  #       Fn::ImportValue:
+  #         !Sub "${EnvironmentName}-PUB1-SN"
+  #     ImageId: ami-0c4f7023847b90238
+  #     SecurityGroupIds:
+  #       - !Ref WebServerSecGroup
+  #     KeyName: General
+
+  Pubicinstance1:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      SubnetId: 
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-PUB1-SN"
+      ImageId: !Ref LatestAmiId
+      #ImageId: ami-09d56f8956ab235b3
+      #ImageId: ami-00ddb0e5626798373
+      #ImageId: ami-0022f774911c1d690
+      #use ImageId: ami-0022f774911c1d690 
+      SecurityGroupIds:
+        - !Ref JumpboxSecurityGroup
+      KeyName: General
+      Tags:
+        - Key: Name
+          Value: Bastion-jumpbox-server
+
+Outputs:
+  LoadBalancerDNSName:
+    Description: DNS Name of the web application
+    Value: !Join
+      - ""
+      - - "http://"
+        - !GetAtt WebAppLB.DNSName
+    Export:
+      Name: ELB-DNS-Name
